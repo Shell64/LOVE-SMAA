@@ -2,8 +2,8 @@ local Image = love.graphics.newImage("image.png")
 
 love.window.setMode(1920, 1080)
 
-local AreaTexture = love.graphics.newImage("AreaTexDX10.png")
-local SearchTexture = love.graphics.newImage("SearchTex.png")
+local AreaTexture = love.graphics.newImage("AreaTexDX10.png", {mipmaps = true, linear = true})
+local SearchTexture = love.graphics.newImage("SearchTex.png", {mipmaps = true, linear = true})
 
 local EdgeShader = love.graphics.newShader("edge.c")
 local BlendShader = love.graphics.newShader("blend.c")
@@ -26,9 +26,15 @@ function love.draw()
 		--love.graphics.draw(EdgeCanvas)
 		
 		love.graphics.setShader(BlendShader)
+		pcall(function()
 		BlendShader:send("edge_tex", EdgeCanvas)
+		end)
+		pcall(function()
 		BlendShader:send("area_tex", AreaTexture)
+		end)
+		pcall(function()
 		BlendShader:send("search_tex", SearchTexture)
+		end)
 		
 		love.graphics.setCanvas(BlendCanvas)
 		love.graphics.draw(Image)

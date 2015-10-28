@@ -1,48 +1,281 @@
 #extension GL_ARB_shader_texture_lod : enable
 #extension GL_EXT_gpu_shader4 : enable
 
-varying vec4 offset[3];
+#extension GL_ARB_shader_texture_lod : enable
+#extension GL_EXT_gpu_shader4 : enable
 
-#ifdef VERTEX
-	/**
-	 * Edge Detection Vertex Shader
-	 */
-	void SMAAEdgeDetectionVS() {
-		vec2 SMAA_PIXEL_SIZE = 1.0 / love_ScreenSize.xy;
-		
-		offset[0] = VertexTexCoord.xyxy + SMAA_PIXEL_SIZE.xyxy * vec4(-1.0, 0.0, 0.0, -1.0);
-		offset[1] = VertexTexCoord.xyxy + SMAA_PIXEL_SIZE.xyxy * vec4( 1.0, 0.0, 0.0,  1.0);
-		offset[2] = VertexTexCoord.xyxy + SMAA_PIXEL_SIZE.xyxy * vec4(-2.0, 0.0, 0.0, -2.0);
-	}
+/**
+ * Copyright (C) 2011 Jorge Jimenez (jorge@iryoku.com)
+ * Copyright (C) 2011 Belen Masia (bmasia@unizar.es) 
+ * Copyright (C) 2011 Jose I. Echevarria (joseignacioechevarria@gmail.com) 
+ * Copyright (C) 2011 Fernando Navarro (fernandn@microsoft.com) 
+ * Copyright (C) 2011 Diego Gutierrez (diegog@unizar.es)
+ * All rights reserved.
+ * 
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions are met:
+ * 
+ *    1. Redistributions of source code must retain the above copyright notice,
+ *       this list of conditions and the following disclaimer.
+ * 
+ *    2. Redistributions in binary form must reproduce the following disclaimer
+ *       in the documentation and/or other materials provided with the 
+ *       distribution:
+ * 
+ *      "Uses SMAA. Copyright (C) 2011 by Jorge Jimenez, Jose I. Echevarria,
+ *       Belen Masia, Fernando Navarro and Diego Gutierrez."
+ * 
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS ``AS 
+ * IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, 
+ * THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR 
+ * PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL COPYRIGHT HOLDERS OR CONTRIBUTORS 
+ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR 
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF 
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS 
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN 
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) 
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE 
+ * POSSIBILITY OF SUCH DAMAGE.
+ * 
+ * The views and conclusions contained in the software and documentation are 
+ * those of the authors and should not be interpreted as representing official
+ * policies, either expressed or implied, of the copyright holders.
+ */
 
-	// Edge vertex shader
-	vec4 position(mat4 transform_projection, vec4 vertex_position)
-	{
-		SMAAEdgeDetectionVS();
-		
-		return transform_projection * vertex_position;
-	}
 
-#endif
-
-#ifdef PIXEL
-
-// The big MSAA code!
-
-
-#define SMAA_GLSL_3 1
-#define SMAA_PIXEL_SIZE (1.0 / love_ScreenSize.xy)
-
-//#define SMAA_PRESET_LOW 1
-//#define SMAA_PRESET_MEDIUM 1
-//#define SMAA_PRESET_HIGH 1  // Weird artifacts occur!
-//#define SMAA_PRESET_ULTRA 1 // Weird artifacts occur!
-
-#define SMAA_THRESHOLD 0.1
-#define SMAA_MAX_SEARCH_STEPS 8
-#define SMAA_MAX_SEARCH_STEPS_DIAG 0
-#define SMAA_CORNER_ROUNDING 100
-
+/**
+ *                  _______  ___  ___       ___           ___
+ *                 /       ||   \/   |     /   \         /   \
+ *                |   (---- |  \  /  |    /  ^  \       /  ^  \
+ *                 \   \    |  |\/|  |   /  /_\  \     /  /_\  \
+ *              ----)   |   |  |  |  |  /  _____  \   /  _____  \
+ *             |_______/    |__|  |__| /__/     \__\ /__/     \__\
+ * 
+ *                               E N H A N C E D
+ *       S U B P I X E L   M O R P H O L O G I C A L   A N T I A L I A S I N G
+ *
+ *                         http://www.iryoku.com/smaa/
+ *
+ * Hi, welcome aboard!
+ * 
+ * Here you'll find instructions to get the shader up and running as fast as
+ * possible.
+ *
+ * IMPORTANTE NOTICE: when updating, remember to update both this file and the
+ * precomputed textures! They may change from version to version.
+ *
+ * The shader has three passes, chained together as follows:
+ *
+ *                           |input|------------------�
+ *                              v                     |
+ *                    [ SMAA*EdgeDetection ]          |
+ *                              v                     |
+ *                          |edgesTex|                |
+ *                              v                     |
+ *              [ SMAABlendingWeightCalculation ]     |
+ *                              v                     |
+ *                          |blendTex|                |
+ *                              v                     |
+ *                [ SMAANeighborhoodBlending ] <------�
+ *                              v
+ *                           |output|
+ *
+ * Note that each [pass] has its own vertex and pixel shader.
+ *
+ * You've three edge detection methods to choose from: luma, color or depth.
+ * They represent different quality/performance and anti-aliasing/sharpness
+ * tradeoffs, so our recommendation is for you to choose the one that best
+ * suits your particular scenario:
+ *
+ * - Depth edge detection is usually the fastest but it may miss some edges.
+ *
+ * - Luma edge detection is usually more expensive than depth edge detection,
+ *   but catches visible edges that depth edge detection can miss.
+ *
+ * - Color edge detection is usually the most expensive one but catches
+ *   chroma-only edges.
+ *
+ * For quickstarters: just use luma edge detection.
+ *
+ * The general advice is to not rush the integration process and ensure each
+ * step is done correctly (don't try to integrate SMAA T2x with predicated edge
+ * detection from the start!). Ok then, let's go!
+ *
+ *  1. The first step is to create two RGBA temporal framebuffers for holding
+ *     |edgesTex| and |blendTex|.
+ *
+ *     In DX10, you can use a RG framebuffer for the edges texture, but in our
+ *     experience it yields worse performance.
+ *
+ *     On the Xbox 360, you can use the same framebuffer for resolving both
+ *     |edgesTex| and |blendTex|, as they aren't needed simultaneously.
+ *
+ *  2. Both temporal framebuffers |edgesTex| and |blendTex| must be cleared
+ *     each frame. Do not forget to clear the alpha channel!
+ *
+ *  3. The next step is loading the two supporting precalculated textures,
+ *     'areaTex' and 'searchTex'. You'll find them in the 'Textures' folder as
+ *     C++ headers, and also as regular DDS files. They'll be needed for the
+ *     'SMAABlendingWeightCalculation' pass.
+ *
+ *     If you use the C++ headers, be sure to load them in the format specified
+ *     inside of them.
+ *
+ *  4. In DX9, all samplers must be set to linear filtering and clamp, with the
+ *     exception of 'searchTex', which must be set to point filtering.
+ *
+ *  5. All texture reads and buffer writes must be non-sRGB, with the exception
+ *     of the input read and the output write of input in 
+ *     'SMAANeighborhoodBlending' (and only in this pass!). If sRGB reads in
+ *     this last pass are not possible, the technique will work anyway, but
+ *     will perform antialiasing in gamma space. 
+ *
+ *     IMPORTANT: for best results the input read for the color/luma edge 
+ *     detection should *NOT* be sRGB.
+ *
+ *  6. Before including SMAA.h you'll have to setup the framebuffer pixel size,
+ *     the target and any optional configuration defines. Optionally you can
+ *     use a preset.
+ *
+ *     You have three targets available: 
+ *         SMAA_HLSL_3
+ *         SMAA_HLSL_4
+ *         SMAA_HLSL_4_1
+ *         SMAA_GLSL_3 *
+ *         SMAA_GLSL_4 *
+ *
+ *         * (See SMAA_ONLY_COMPILE_VS below).
+ *
+ *     And four presets:
+ *         SMAA_PRESET_LOW          (%60 of the quality)
+ *         SMAA_PRESET_MEDIUM       (%80 of the quality)
+ *         SMAA_PRESET_HIGH         (%95 of the quality)
+ *         SMAA_PRESET_ULTRA        (%99 of the quality)
+ *
+ *     For example:
+ *         #define SMAA_PIXEL_SIZE vec2(1.0 / 1280.0, 1.0 / 720.0)
+ *         #define SMAA_HLSL_4 1 
+ *         #define SMAA_PRESET_HIGH 1
+ *         #include "SMAA.h"
+ *
+ *  7. Then, you'll have to setup the passes as indicated in the scheme above.
+ *     You can take a look into SMAA.fx, to see how we did it for our demo.
+ *     Checkout the function wrappers, you may want to copy-paste them!
+ *
+ *  8. It's recommended to validate the produced |edgesTex| and |blendTex|.
+ *     It's advised to not continue with the implementation until both buffers
+ *     are verified to produce identical results to our reference demo.
+ *
+ *  9. After you get the last pass to work, it's time to optimize. You'll have
+ *     to initialize a stencil buffer in the first pass (discard is already in
+ *     the code), then mask execution by using it the second pass. The last
+ *     pass should be executed in all pixels.
+ *
+ *
+ * After this point you can choose to enable predicated thresholding,
+ * temporal supersampling and motion blur integration:
+ *
+ * a) If you want to use predicated thresholding, take a look into
+ *    SMAA_PREDICATION; you'll need to pass an extra texture in the edge
+ *    detection pass.
+ *
+ * b) If you want to enable temporal supersampling (SMAA T2x):
+ *
+ * 1. The first step is to render using subpixel jitters. I won't go into
+ *    detail, but it's as simple as moving each vertex position in the
+ *    vertex shader, you can check how we do it in our DX10 demo.
+ *
+ * 2. Then, you must setup the temporal resolve. You may want to take a look
+ *    into SMAAResolve for resolving 2x modes. After you get it working, you'll
+ *    probably see ghosting everywhere. But fear not, you can enable the
+ *    CryENGINE temporal reprojection by setting the SMAA_REPROJECTION macro.
+ *
+ * 3. The next step is to apply SMAA to each subpixel jittered frame, just as
+ *    done for 1x.
+ *
+ * 4. At this point you should already have something usable, but for best
+ *    results the proper area textures must be set depending on current jitter.
+ *    For this, the parameter 'subsampleIndices' of
+ *    'SMAABlendingWeightCalculationPS' must be set as follows, for our T2x
+ *    mode:
+ *
+ *    @SUBSAMPLE_INDICES
+ *
+ *    | S# |  Camera Jitter   |  subsampleIndices  |
+ *    +----+------------------+--------------------+
+ *    |  0 |  ( 0.25, -0.25)  |  ivec4(1, 1, 1, 0)  |
+ *    |  1 |  (-0.25,  0.25)  |  ivec4(2, 2, 2, 0)  |
+ *
+ *    These jitter positions assume a bottom-to-top y axis. S# stands for the
+ *    sample number.
+ *
+ * More information about temporal supersampling here:
+ *    http://iryoku.com/aacourse/downloads/13-Anti-Aliasing-Methods-in-CryENGINE-3.pdf
+ *
+ * c) If you want to enable spatial multisampling (SMAA S2x):
+ *
+ * 1. The scene must be rendered using MSAA 2x. The MSAA 2x buffer must be
+ *    created with:
+ *      - DX10:     see below (*)
+ *      - DX10.1:   D3D10_STANDARD_MULTISAMPLE_PATTERN or
+ *      - DX11:     D3D11_STANDARD_MULTISAMPLE_PATTERN
+ *
+ *    This allows to ensure that the subsample order matches the table in
+ *    @SUBSAMPLE_INDICES.
+ *
+ *    (*) In the case of DX10, we refer the reader to:
+ *      - SMAA::detectMSAAOrder and
+ *      - SMAA::msaaReorder
+ *
+ *    These functions allow to match the standard multisample patterns by
+ *    detecting the subsample order for a specific GPU, and reordering
+ *    them appropriately.
+ *
+ * 2. A shader must be run to output each subsample into a separate buffer
+ *    (DX10 is required). You can use SMAASeparate for this purpose, or just do
+ *    it in an existing pass (for example, in the tone mapping pass).
+ *
+ * 3. The full SMAA 1x pipeline must be run for each separated buffer, storing
+ *    the results in the final buffer. The second run should alpha blend with
+ *    the existing final buffer using a blending factor of 0.5.
+ *    'subsampleIndices' must be adjusted as in the SMAA T2x case (see point
+ *    b).
+ *
+ * d) If you want to enable temporal supersampling on top of SMAA S2x
+ *    (which actually is SMAA 4x):
+ *
+ * 1. SMAA 4x consists on temporally jittering SMAA S2x, so the first step is
+ *    to calculate SMAA S2x for current frame. In this case, 'subsampleIndices'
+ *    must be set as follows:
+ *
+ *    | F# | S# |   Camera Jitter    |    Net Jitter     |  subsampleIndices  |
+ *    +----+----+--------------------+-------------------+--------------------+
+ *    |  0 |  0 |  ( 0.125,  0.125)  |  ( 0.375, -0.125) |  ivec4(5, 3, 1, 3)  |
+ *    |  0 |  1 |  ( 0.125,  0.125)  |  (-0.125,  0.375) |  ivec4(4, 6, 2, 3)  |
+ *    +----+----+--------------------+-------------------+--------------------+
+ *    |  1 |  2 |  (-0.125, -0.125)  |  ( 0.125, -0.375) |  ivec4(3, 5, 1, 4)  |
+ *    |  1 |  3 |  (-0.125, -0.125)  |  (-0.375,  0.125) |  ivec4(6, 4, 2, 4)  |
+ *
+ *    These jitter positions assume a bottom-to-top y axis. F# stands for the
+ *    frame number. S# stands for the sample number.
+ *
+ * 2. After calculating SMAA S2x for current frame (with the new subsample
+ *    indices), previous frame must be reprojected as in SMAA T2x mode (see
+ *    point b).
+ *
+ * e) If motion blur is used, you may want to do the edge detection pass
+ *    together with motion blur. This has two advantages:
+ *
+ * 1. Pixels under heavy motion can be omitted from the edge detection process.
+ *    For these pixels we can just store "no edge", as motion blur will take
+ *    care of them.
+ * 2. The center pixel tap is reused.
+ *
+ * Note that in this case depth testing should be used instead of stenciling,
+ * as we have to write all the pixels in the motion blur pass.
+ *
+ * That's it!
+ */
 
 //-----------------------------------------------------------------------------
 // SMAA Presets
@@ -51,22 +284,23 @@ varying vec4 offset[3];
  * Note that if you use one of these presets, the corresponding macros below
  * won't be used.
  */
+
 #if SMAA_PRESET_LOW == 1
 #define SMAA_THRESHOLD 0.15
 #define SMAA_MAX_SEARCH_STEPS 4
 #define SMAA_MAX_SEARCH_STEPS_DIAG 0
 #define SMAA_CORNER_ROUNDING 100
-#elseif SMAA_PRESET_MEDIUM == 1
+#elif SMAA_PRESET_MEDIUM == 1
 #define SMAA_THRESHOLD 0.1
 #define SMAA_MAX_SEARCH_STEPS 8
 #define SMAA_MAX_SEARCH_STEPS_DIAG 0
 #define SMAA_CORNER_ROUNDING 100
-#elseif SMAA_PRESET_HIGH == 1
+#elif SMAA_PRESET_HIGH == 1
 #define SMAA_THRESHOLD 0.1
 #define SMAA_MAX_SEARCH_STEPS 16
 #define SMAA_MAX_SEARCH_STEPS_DIAG 8
 #define SMAA_CORNER_ROUNDING 25
-#elseif SMAA_PRESET_ULTRA == 1
+#elif SMAA_PRESET_ULTRA == 1
 #define SMAA_THRESHOLD 0.05
 #define SMAA_MAX_SEARCH_STEPS 32
 #define SMAA_MAX_SEARCH_STEPS_DIAG 16
@@ -254,17 +488,19 @@ varying vec4 offset[3];
 
 //-----------------------------------------------------------------------------
 // Porting Functions
+#define SMAA_GLSL_3 1
+#define SMAA_PIXEL_SIZE (1.0 / love_ScreenSize.xy)
 
 #if SMAA_HLSL_3 == 1
 #define SMAATexture2D sampler2D
-#define SMAASampleLevelZero(tex, coord) texture2DLod(tex, vec4(coord, 0.0, 0.0))
-#define SMAASampleLevelZeroPoint(tex, coord) texture2DLod(tex, vec4(coord, 0.0, 0.0))
-#define SMAASample(tex, coord) texture2D(tex, coord)
-#define SMAASamplePoint(tex, coord) texture2D(tex, coord)
-#define SMAASampleLevelZeroOffset(tex, coord, offset) texture2DLod(tex, vec4(coord + offset * SMAA_PIXEL_SIZE, 0.0, 0.0))
-#define SMAASampleOffset(tex, coord, offset) texture2D(tex, coord + offset * SMAA_PIXEL_SIZE)
+#define SMAASampleLevelZero(tex, coord) tex2Dlod(tex, vec4(coord, 0.0, 0.0))
+#define SMAASampleLevelZeroPoint(tex, coord) tex2Dlod(tex, vec4(coord, 0.0, 0.0))
+#define SMAASample(tex, coord) tex2D(tex, coord)
+#define SMAASamplePoint(tex, coord) tex2D(tex, coord)
+#define SMAASampleLevelZeroOffset(tex, coord, offset) tex2Dlod(tex, vec4(coord + offset * SMAA_PIXEL_SIZE, 0.0, 0.0))
+#define SMAASampleOffset(tex, coord, offset) tex2D(tex, coord + offset * SMAA_PIXEL_SIZE)
 #define SMAALerp(a, b, t) lerp(a, b, t)
-#define SMAASaturate(a) clamp(a, 0.0, 1.0)
+#define SMAASaturate(a) saturate(a)
 #define SMAAMad(a, b, c) mad(a, b, c)
 #define SMAA_FLATTEN [flatten]
 #define SMAA_BRANCH [branch]
@@ -280,7 +516,7 @@ SamplerState PointSampler { Filter = MIN_MAG_MIP_POINT; AddressU = Clamp; Addres
 #define SMAASampleLevelZeroOffset(tex, coord, offset) tex.SampleLevel(LinearSampler, coord, 0, offset)
 #define SMAASampleOffset(tex, coord, offset) SMAASampleLevelZeroOffset(tex, coord, offset)
 #define SMAALerp(a, b, t) lerp(a, b, t)
-#define SMAASaturate(a) clamp(a, 0.0, 1.0)
+#define SMAASaturate(a) saturate(a)
 #define SMAAMad(a, b, c) mad(a, b, c)
 #define SMAA_FLATTEN [flatten]
 #define SMAA_BRANCH [branch]
@@ -292,29 +528,29 @@ SamplerState PointSampler { Filter = MIN_MAG_MIP_POINT; AddressU = Clamp; Addres
 #endif
 #if SMAA_GLSL_3 == 1 || SMAA_GLSL_4 == 1
 #define SMAATexture2D sampler2D
-#define SMAASampleLevelZero(tex, coord) texture2DLod(tex, coord, 0.0)
-#define SMAASampleLevelZeroPoint(tex, coord) texture2DLod(tex, coord, 0.0)
-#define SMAASample(tex, coord) texture2D(tex, coord)
-#define SMAASamplePoint(tex, coord) texture2D(tex, coord)
-#define SMAASampleLevelZeroOffset(tex, coord, offset) texture2DLodOffset(tex, coord, 0.0, offset)
-#define SMAASampleOffset(tex, coord, offset) texture(tex, coord, offset)
 #define SMAALerp(a, b, t) mix(a, b, t)
 #define SMAASaturate(a) clamp(a, 0.0, 1.0)
 #define SMAA_FLATTEN
 #define SMAA_BRANCH
-#define vec2 vec2
-#define vec3 vec3
-#define vec4 vec4
-#define int2 ivec2
-#define int3 ivec3
-#define int4 ivec4
 #endif
 #if SMAA_GLSL_3 == 1
+#define SMAASample(tex, coord) texture2D(tex, coord)
+#define SMAASamplePoint(tex, coord) texture2D(tex, coord)
 #define SMAAMad(a, b, c) (a * b + c)
+#define SMAASampleLevelZero(tex, coord) texture2DLod(tex, coord, 0.0)
+#define SMAASampleLevelZeroPoint(tex, coord) texture2DLod(tex, coord, 0.0)
+#define SMAASampleLevelZeroOffset(tex, coord, offset) texture2DLodOffset(tex, coord, 0.0, offset)
+#define SMAASampleOffset(tex, coord, offset) texture2D(tex, coord, offset)
 #endif
 #if SMAA_GLSL_4 == 1
+#define SMAASample(tex, coord) texture(tex, coord)
+#define SMAASamplePoint(tex, coord) texture(tex, coord)
 #define SMAAMad(a, b, c) fma(a, b, c)
 #define SMAAGather(tex, coord) textureGather(tex, coord)
+#define SMAASampleLevelZero(tex, coord) textureLod(tex, coord, 0.0)
+#define SMAASampleLevelZeroPoint(tex, coord) textureLod(tex, coord, 0.0)
+#define SMAASampleLevelZeroOffset(tex, coord, offset) textureLodOffset(tex, coord, 0.0, offset)
+#define SMAASampleOffset(tex, coord, offset) texture(tex, coord, offset)
 #endif
 
 //-----------------------------------------------------------------------------
@@ -431,6 +667,7 @@ void SMAASeparateVS(vec4 position,
  * IMPORTANT NOTICE: luma edge detection requires gamma-corrected colors, and
  * thus 'colorTex' should be a non-sRGB texture.
  */
+ #ifdef PIXEL
 vec4 SMAALumaEdgeDetectionPS(vec2 texcoord,
                                vec4 offset[3],
                                SMAATexture2D colorTex
@@ -576,7 +813,7 @@ vec4 SMAADepthEdgeDetectionPS(vec2 texcoord,
 
     return vec4(edges, 0.0, 0.0);
 }
-
+#endif
 //-----------------------------------------------------------------------------
 // Diagonal Search Functions
 
@@ -603,7 +840,7 @@ float SMAASearchDiag2(SMAATexture2D edgesTex, vec2 texcoord, vec2 dir, float c) 
     float i;
     for (i = 0.0; i < float(SMAA_MAX_SEARCH_STEPS_DIAG); i++) {
         e.g = SMAASampleLevelZero(edgesTex, texcoord).g;
-        e.r = SMAASampleLevelZeroOffset(edgesTex, texcoord, int2(1, 0)).r;
+        e.r = SMAASampleLevelZeroOffset(edgesTex, texcoord, ivec2(1, 0)).r;
         SMAA_FLATTEN if (dot(e, vec2(1.0, 1.0)) < 1.9) break;
         texcoord += dir * SMAA_PIXEL_SIZE;
     }
@@ -628,7 +865,7 @@ vec2 SMAAAreaDiag(SMAATexture2D areaTex, vec2 dist, vec2 e, float offset) {
 
     // Do it!
     #if SMAA_HLSL_3 == 1
-    return SMAASampleLevelZero(areaTex, texcoord).rg;
+    return SMAASampleLevelZero(areaTex, texcoord).ra;
     #else
     return SMAASampleLevelZero(areaTex, texcoord).rg;
     #endif
@@ -637,7 +874,7 @@ vec2 SMAAAreaDiag(SMAATexture2D areaTex, vec2 dist, vec2 e, float offset) {
 /**
  * This searches for diagonal patterns and returns the corresponding weights.
  */
-vec2 SMAACalculateDiagWeights(SMAATexture2D edgesTex, SMAATexture2D areaTex, vec2 texcoord, vec2 e, int4 subsampleIndices) {
+vec2 SMAACalculateDiagWeights(SMAATexture2D edgesTex, SMAATexture2D areaTex, vec2 texcoord, vec2 e, ivec4 subsampleIndices) {
     vec2 weights = vec2(0.0, 0.0);
 
     vec2 d;
@@ -649,10 +886,10 @@ vec2 SMAACalculateDiagWeights(SMAATexture2D edgesTex, SMAATexture2D areaTex, vec
         vec4 coords = SMAAMad(vec4(-d.r, d.r, d.g, -d.g), SMAA_PIXEL_SIZE.xyxy, texcoord.xyxy);
 
         vec4 c;
-        c.x = SMAASampleLevelZeroOffset(edgesTex, coords.xy, int2(-1,  0)).g;
-        c.y = SMAASampleLevelZeroOffset(edgesTex, coords.xy, int2( 0,  0)).r;
-        c.z = SMAASampleLevelZeroOffset(edgesTex, coords.zw, int2( 1,  0)).g;
-        c.w = SMAASampleLevelZeroOffset(edgesTex, coords.zw, int2( 1, -1)).r;
+        c.x = SMAASampleLevelZeroOffset(edgesTex, coords.xy, ivec2(-1,  0)).g;
+        c.y = SMAASampleLevelZeroOffset(edgesTex, coords.xy, ivec2( 0,  0)).r;
+        c.z = SMAASampleLevelZeroOffset(edgesTex, coords.zw, ivec2( 1,  0)).g;
+        c.w = SMAASampleLevelZeroOffset(edgesTex, coords.zw, ivec2( 1, -1)).r;
         vec2 e = 2.0 * c.xz + c.yw;
         float t = float(SMAA_MAX_SEARCH_STEPS_DIAG) - 1.0;
         e *= step(d.rg, vec2(t, t));
@@ -661,7 +898,7 @@ vec2 SMAACalculateDiagWeights(SMAATexture2D edgesTex, SMAATexture2D areaTex, vec
     }
 
     d.x = SMAASearchDiag2(edgesTex, texcoord, vec2(-1.0, -1.0), 0.0);
-    float right = SMAASampleLevelZeroOffset(edgesTex, texcoord, int2(1, 0)).r;
+    float right = SMAASampleLevelZeroOffset(edgesTex, texcoord, ivec2(1, 0)).r;
     d.y = right > 0.0? SMAASearchDiag2(edgesTex, texcoord, vec2(1.0, 1.0), 1.0) : 0.0;
 
     SMAA_BRANCH
@@ -669,9 +906,9 @@ vec2 SMAACalculateDiagWeights(SMAATexture2D edgesTex, SMAATexture2D areaTex, vec
         vec4 coords = SMAAMad(vec4(-d.r, -d.r, d.g, d.g), SMAA_PIXEL_SIZE.xyxy, texcoord.xyxy);
 
         vec4 c;
-        c.x  = SMAASampleLevelZeroOffset(edgesTex, coords.xy, int2(-1,  0)).g;
-        c.y  = SMAASampleLevelZeroOffset(edgesTex, coords.xy, int2( 0, -1)).r;
-        c.zw = SMAASampleLevelZeroOffset(edgesTex, coords.zw, int2( 1,  0)).gr;
+        c.x  = SMAASampleLevelZeroOffset(edgesTex, coords.xy, ivec2(-1,  0)).g;
+        c.y  = SMAASampleLevelZeroOffset(edgesTex, coords.xy, ivec2( 0, -1)).r;
+        c.zw = SMAASampleLevelZeroOffset(edgesTex, coords.zw, ivec2( 1,  0)).gr;
         vec2 e = 2.0 * c.xz + c.yw;
         float t = float(SMAA_MAX_SEARCH_STEPS_DIAG) - 1.0;
         e *= step(d.rg, vec2(t, t));
@@ -698,6 +935,7 @@ float SMAASearchLength(SMAATexture2D searchTex, vec2 e, float bias, float scale)
     // e = vec2(bias, 0.0) + 0.5 * SEARCH_TEX_PIXEL_SIZE + 
     //     e * vec2(scale, 1.0) * vec2(64.0, 32.0) * SEARCH_TEX_PIXEL_SIZE;
     e.r = bias + e.r * scale;
+	e.g = -e.g;
     return 255.0 * SMAASampleLevelZeroPoint(searchTex, e).r;
 }
 
@@ -797,7 +1035,7 @@ vec2 SMAAArea(SMAATexture2D areaTex, vec2 dist, float e1, float e2, float offset
 
     // Do it!
     #if SMAA_HLSL_3 == 1
-    return SMAASampleLevelZero(areaTex, texcoord).rg;
+    return SMAASampleLevelZero(areaTex, texcoord).ra;
     #else
     return SMAASampleLevelZero(areaTex, texcoord).rg;
     #endif
@@ -811,13 +1049,13 @@ void SMAADetectHorizontalCornerPattern(SMAATexture2D edgesTex, inout vec2 weight
     vec4 coords = SMAAMad(vec4(d.x, 0.0, d.y, 0.0),
                             SMAA_PIXEL_SIZE.xyxy, texcoord.xyxy);
     vec2 e;
-    e.r = SMAASampleLevelZeroOffset(edgesTex, coords.xy, int2(0.0,  1.0)).r;
+    e.r = SMAASampleLevelZeroOffset(edgesTex, coords.xy, ivec2(0.0,  1.0)).r;
     bool left = abs(d.x) < abs(d.y);
-    e.g = SMAASampleLevelZeroOffset(edgesTex, coords.xy, int2(0.0, -2.0)).r;
+    e.g = SMAASampleLevelZeroOffset(edgesTex, coords.xy, ivec2(0.0, -2.0)).r;
     if (left) weights *= SMAASaturate(float(SMAA_CORNER_ROUNDING) / 100.0 + 1.0 - e);
 
-    e.r = SMAASampleLevelZeroOffset(edgesTex, coords.zw, int2(1.0,  1.0)).r;
-    e.g = SMAASampleLevelZeroOffset(edgesTex, coords.zw, int2(1.0, -2.0)).r;
+    e.r = SMAASampleLevelZeroOffset(edgesTex, coords.zw, ivec2(1.0,  1.0)).r;
+    e.g = SMAASampleLevelZeroOffset(edgesTex, coords.zw, ivec2(1.0, -2.0)).r;
     if (!left) weights *= SMAASaturate(float(SMAA_CORNER_ROUNDING) / 100.0 + 1.0 - e);
     #endif
 }
@@ -827,13 +1065,13 @@ void SMAADetectVerticalCornerPattern(SMAATexture2D edgesTex, inout vec2 weights,
     vec4 coords = SMAAMad(vec4(0.0, d.x, 0.0, d.y),
                             SMAA_PIXEL_SIZE.xyxy, texcoord.xyxy);
     vec2 e;
-    e.r = SMAASampleLevelZeroOffset(edgesTex, coords.xy, int2( 1.0, 0.0)).g;
+    e.r = SMAASampleLevelZeroOffset(edgesTex, coords.xy, ivec2( 1.0, 0.0)).g;
     bool left = abs(d.x) < abs(d.y);
-    e.g = SMAASampleLevelZeroOffset(edgesTex, coords.xy, int2(-2.0, 0.0)).g;
+    e.g = SMAASampleLevelZeroOffset(edgesTex, coords.xy, ivec2(-2.0, 0.0)).g;
     if (left) weights *= SMAASaturate(float(SMAA_CORNER_ROUNDING) / 100.0 + 1.0 - e);
 
-    e.r = SMAASampleLevelZeroOffset(edgesTex, coords.zw, int2( 1.0, 1.0)).g;
-    e.g = SMAASampleLevelZeroOffset(edgesTex, coords.zw, int2(-2.0, 1.0)).g;
+    e.r = SMAASampleLevelZeroOffset(edgesTex, coords.zw, ivec2( 1.0, 1.0)).g;
+    e.g = SMAASampleLevelZeroOffset(edgesTex, coords.zw, ivec2(-2.0, 1.0)).g;
     if (!left) weights *= SMAASaturate(float(SMAA_CORNER_ROUNDING) / 100.0 + 1.0 - e);
     #endif
 }
@@ -847,7 +1085,7 @@ vec4 SMAABlendingWeightCalculationPS(vec2 texcoord,
                                        SMAATexture2D edgesTex, 
                                        SMAATexture2D areaTex, 
                                        SMAATexture2D searchTex,
-                                       int4 subsampleIndices) { // Just pass zero for SMAA 1x, see @SUBSAMPLE_INDICES.
+                                       ivec4 subsampleIndices) { // Just pass zero for SMAA 1x, see @SUBSAMPLE_INDICES.
     vec4 weights = vec4(0.0, 0.0, 0.0, 0.0);
 
     vec2 e = SMAASample(edgesTex, texcoord).rg;
@@ -891,7 +1129,7 @@ vec4 SMAABlendingWeightCalculationPS(vec2 texcoord,
         vec2 sqrt_d = sqrt(abs(d));
 
         // Fetch the right crossing edges:
-        float e2 = SMAASampleLevelZeroOffset(edgesTex, coords, int2(1, 0)).r;
+        float e2 = SMAASampleLevelZeroOffset(edgesTex, coords, ivec2(1, 0)).r;
 
         // Ok, we know how this pattern looks like, now it is time for getting
         // the actual area:
@@ -931,7 +1169,7 @@ vec4 SMAABlendingWeightCalculationPS(vec2 texcoord,
         vec2 sqrt_d = sqrt(abs(d));
 
         // Fetch the bottom crossing edges:
-        float e2 = SMAASampleLevelZeroOffset(edgesTex, coords, int2(0, 1)).g;
+        float e2 = SMAASampleLevelZeroOffset(edgesTex, coords, ivec2(0, 1)).g;
 
         // Get the area for this direction:
         weights.ba = SMAAArea(areaTex, sqrt_d, e1, e2, float(subsampleIndices.x));
@@ -993,7 +1231,7 @@ vec4 SMAANeighborhoodBlendingPS(vec2 texcoord,
         // Unpack velocity and return the resulting value:
         Caa.a = sqrt(Caa.a);
         return Caa;
-        #elseif SMAA_HLSL_4 == 1 || SMAA_DIRECTX9_LINEAR_BLEND == 0
+        #elif SMAA_HLSL_4 == 1 || SMAA_DIRECTX9_LINEAR_BLEND == 0
         // We exploit bilinear filtering to mix current pixel with the chosen
         // neighbor:
         texcoord += offset * SMAA_PIXEL_SIZE;
@@ -1053,7 +1291,7 @@ void SMAASeparatePS(vec4 position : SV_POSITION,
                     out vec4 target0,
                     out vec4 target1,
                     uniform SMAATexture2DMS2 colorTexMS) {
-    int2 pos = int2(position.xy);
+    ivec2 pos = ivec2(position.xy);
     target0 = SMAALoad(colorTexMS, pos, 0);
     target1 = SMAALoad(colorTexMS, pos, 1);
 }
@@ -1062,11 +1300,26 @@ void SMAASeparatePS(vec4 position : SV_POSITION,
 //-----------------------------------------------------------------------------
 #endif // SMAA_ONLY_COMPILE_VS == 0
 
-// Edge fragment shader
+varying vec4 offset[3];
+varying vec4 dummy2;
+#ifdef VERTEX
+	// Edge vertex shader
+	vec4 position(mat4 transform_projection, vec4 vertex_position)
+	{
+		vec4 dummy1 = vec4(0.0);
+		vec4 VertexTexCoord2 = VertexTexCoord;
+		SMAAEdgeDetectionVS(dummy1, dummy2, VertexTexCoord2.xy, offset);
+		
+		return transform_projection * vertex_position;
+	}
+
+#endif
+
+#ifdef PIXEL
+
 vec4 effect( vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords )
 {
-    //gl_FragColor = SMAAColorEdgeDetectionPS(texcoord, offset, texture);
-	return SMAAColorEdgeDetectionPS(texture_coords, offset, texture);
-   // return SMAALumaEdgeDetectionPS(texture_coords, offset, texture);
+	//return SMAAColorEdgeDetectionPS(texture_coords, offset, texture);
+	return SMAALumaEdgeDetectionPS(texture_coords, offset, texture);
 }
 #endif
