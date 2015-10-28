@@ -62,4 +62,7 @@ function love.draw()
 		love.graphics.setCanvas()
 		love.graphics.draw(Image)
 	end
+	
+	love.graphics.setBlendMode("alpha", true)
+	love.graphics.print("Press B for activating SMAA (Neighborhood pass).\nPress B + Q for drawing edge pass\nPress B + W for drawing blend pass")
 end
