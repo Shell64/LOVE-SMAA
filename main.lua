@@ -1,4 +1,4 @@
-local Image = love.graphics.newImage("image.png", {linear = true})
+local Image = love.graphics.newImage("image.png")
 
 love.window.setMode(1280, 720)
 
@@ -13,7 +13,7 @@ local NeighborhoodShader = love.graphics.newShader("neigh.c")
 local width, height = love.graphics.getDimensions()
 local EdgeCanvas = love.graphics.newCanvas(width, height, "rg8")
 local BlendCanvas = love.graphics.newCanvas(width, height, "rgba8")
-local WholeRender = love.graphics.newCanvas(width, height, "rgba8")
+local WholeRender = love.graphics.newCanvas(width, height, "srgb")
 
 function love.draw()
 	love.graphics.setBlendMode("replace", false)
