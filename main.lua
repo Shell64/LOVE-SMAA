@@ -1,48 +1,49 @@
-local Image = love.graphics.newImage("image.png")
+local Image = love.graphics.newImage("image.png", {linear = true})
 
-love.window.setMode(1920, 1080)
+love.window.setMode(1280, 720)
 
-local AreaTexture = love.graphics.newImage("AreaTexDX10.png", {mipmaps = true, linear = true})
-local SearchTexture = love.graphics.newImage("SearchTex.png", {mipmaps = true, linear = true})
+local AreaTexture = love.graphics.newImage("AreaTexDX10.png", {mipmaps = false, linear = true})
+local SearchTexture = love.graphics.newImage("SearchTex.png", {mipmaps = false, linear = true})
+SearchTexture:setFilter("nearest", "nearest", 0)
 
 local EdgeShader = love.graphics.newShader("edge.c")
 local BlendShader = love.graphics.newShader("blend.c")
 local NeighborhoodShader = love.graphics.newShader("neigh.c")
 
 local width, height = love.graphics.getDimensions()
-local EdgeCanvas = love.graphics.newCanvas(width, height, "srgb")
-local BlendCanvas = love.graphics.newCanvas(width, height, "srgb")
+local EdgeCanvas = love.graphics.newCanvas(width, height, "rg8")
+local BlendCanvas = love.graphics.newCanvas(width, height, "rgba8")
+local WholeRender = love.graphics.newCanvas(width, height, "rgba8")
+
 function love.draw()
 	love.graphics.setBlendMode("replace", false)
 	
 	if love.keyboard.isDown("b") then
+		love.graphics.setCanvas(WholeRender)
+		love.graphics.clear(0, 0, 0, 0)
+		love.graphics.draw(Image)
+		
 		love.graphics.setShader(EdgeShader)
 		love.graphics.setCanvas(EdgeCanvas)
-		
-		love.graphics.draw(Image)
+		love.graphics.clear(0, 0, 0, 0)
+		love.graphics.draw(WholeRender)
 		
 		--love.graphics.setShader()
 		--love.graphics.setCanvas()
 		--love.graphics.draw(EdgeCanvas)
 		
 		love.graphics.setShader(BlendShader)
-		pcall(function()
-		BlendShader:send("edge_tex", EdgeCanvas)
-		end)
-		pcall(function()
 		BlendShader:send("area_tex", AreaTexture)
-		end)
-		pcall(function()
 		BlendShader:send("search_tex", SearchTexture)
-		end)
 		
 		love.graphics.setCanvas(BlendCanvas)
-		love.graphics.draw(Image)
+		love.graphics.clear(0, 0, 0, 0)
+		love.graphics.draw(EdgeCanvas)
 		
 		love.graphics.setShader(NeighborhoodShader)
 		love.graphics.setCanvas()
 		NeighborhoodShader:send("blend_tex", BlendCanvas)
-		love.graphics.draw(Image)
+		love.graphics.draw(WholeRender)
 		love.graphics.setShader()
 		
 		

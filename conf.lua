@@ -1,4 +1,4 @@
 function love.conf(t)
 	--t.console = true
-	t.gammacorrect = true
+	t.gammacorrect = false
 end
