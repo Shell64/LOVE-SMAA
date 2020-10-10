@@ -11,12 +11,12 @@ local BlendShader = love.graphics.newShader("blend.c")
 local NeighborhoodShader = love.graphics.newShader("neigh.c")
 
 local width, height = love.graphics.getDimensions()
-local EdgeCanvas = love.graphics.newCanvas(width, height, "rg8")
-local BlendCanvas = love.graphics.newCanvas(width, height, "rgba8")
-local WholeRender = love.graphics.newCanvas(width, height, "srgb")
+local EdgeCanvas = love.graphics.newCanvas(width, height, {format = "rg8"})
+local BlendCanvas = love.graphics.newCanvas(width, height, {format = "rgba8"})
+local WholeRender = love.graphics.newCanvas(width, height, {format = "srgba8"})
 
 function love.draw()
-	love.graphics.setBlendMode("replace", false)
+	love.graphics.setBlendMode("replace", "premultiplied")
 	
 	if love.keyboard.isDown("b") then
 		love.graphics.setCanvas(WholeRender)
@@ -64,6 +64,6 @@ function love.draw()
 		love.graphics.draw(Image)
 	end
 	
-	love.graphics.setBlendMode("alpha", true)
+	love.graphics.setBlendMode("alpha", "alphamultiply")
 	love.graphics.print("Press B for activating SMAA (Neighborhood pass).\nPress B + Q for drawing edge pass\nPress B + W for drawing blend pass")
 end
